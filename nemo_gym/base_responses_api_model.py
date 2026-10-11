@@ -394,6 +394,7 @@ class SimpleResponsesAPIModel(BaseResponsesAPIModel, SimpleServer):
                 socket_path=os.environ[COORDINATOR_SOCKET_ENV],
                 server_name=self.config.name,
                 cut_requester=cut_requester,
+                ledger=capture_ledger,
             )
             install_control_routes(app, link.dispatch, auth_token=settings.control_auth_token)
             original_lifespan = app.router.lifespan_context
