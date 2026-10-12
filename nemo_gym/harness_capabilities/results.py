@@ -7,6 +7,8 @@ from collections.abc import Iterable
 from dataclasses import asdict, dataclass, field
 from typing import Literal
 
+from nemo_gym.harness_reporting import render_matrices as render_matrices
+
 from .checks import Check, Kind, PriorityTier
 
 
@@ -101,38 +103,3 @@ def gate_passes(checks: list[dict], *, tier: PriorityTier = "P0") -> bool:
     """Require all applicable checks in the selected tier, independently of TE labels."""
     selected = [c for c in checks if c["tier"] == tier and c["status"] != "not_applicable"]
     return bool(selected) and all(c["status"] == "pass" for c in selected)
-
-
-def render_matrices(harnesses: dict) -> str:
-    """Render saved check results; never infer a pass from an absent failure message."""
-    labels = {"pass": "✓", "fail": "✗", "not_applicable": "—"}
-    lines = [
-        "# Harness checks by scenario",
-        "",
-        "✓ Pass · ✗ Requirement not demonstrated (invalid, missing, blocked, or no result) · — Not applicable.",
-        "",
-    ]
-    for harness, row in harnesses.items():
-        scenarios = row["scenarios"]
-        keys = list(dict.fromkeys(c["id"] for s in scenarios for c in s.get("checks", [])))
-        lines += [
-            f"## {harness}",
-            "",
-            "| Check | " + " | ".join(s["scenario"] for s in scenarios) + " |",
-            "|---|" + "---|" * len(scenarios),
-        ]
-        for kind in ("schema", "semantic", "behavioral", "health"):
-            group = []
-            for key in keys:
-                found = [next((c for c in s.get("checks", []) if c["id"] == key), None) for s in scenarios]
-                if next(c["kind"] for c in found if c) != kind:
-                    continue
-                cells = [labels[c["status"]] if c else "✗" for c in found]
-                group.append(f"| `{key}` | " + " | ".join(cells) + " |")
-            if group:
-                lines.append(f"| **{kind.title()}** |" + " |" * len(scenarios))
-                lines.extend(group)
-        if not keys:
-            lines.append("| No check results available | " + " | ".join("✗" for _ in scenarios) + " |")
-        lines.append("")
-    return "\n".join(lines)

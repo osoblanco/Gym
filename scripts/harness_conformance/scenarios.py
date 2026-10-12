@@ -3,9 +3,14 @@
 
 """Versioned, model-independent requests used by every harness preset."""
 
-from dataclasses import asdict, dataclass, field
+from __future__ import annotations
 
-from nemo_gym.health.types import Verdict
+from dataclasses import asdict, dataclass, field
+from typing import TYPE_CHECKING
+
+
+if TYPE_CHECKING:
+    from nemo_gym.health.types import Verdict
 
 
 SUITE = "harness-p0-probes/v1"

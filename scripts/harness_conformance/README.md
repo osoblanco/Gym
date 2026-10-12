@@ -30,14 +30,43 @@ probe job fails or is cancelled, making the result visible in the workflow job l
 
 To enforce P0 before merging, add the fixed **Harness conformance P0** check name to
 the repository's required checks. Until configured, it remains optional. It is
-independent of the existing `Nemo_CICD_Test` gate. This workflow does not regenerate
-documentation.
+independent of the existing `Nemo_CICD_Test` gate. Completed scheduled/manual main
+runs trigger the Fern publisher, which consumes the same retained measurements.
 
 Use the diagnostic command below to reproduce a warning at the reported commit.
 When registering another harness in `registry.HARNESSES`, provide its pinned runtime
 installation in `ci.install_runtime` as well as its episode configuration.
 
-## Regenerate the documentation table
+## Automatically published documentation
+
+The `/main/reference/trajectory-capabilities` page is rendered from the latest
+completed scheduled or manual main CI run whenever Fern publishes. Scheduled CI
+runs every four hours. Passing and failing measurements are published; a valid
+unavailable result is displayed explicitly. Other harnesses remain unmeasured.
+Release pages stay pinned to their source snapshots.
+
+To render the same generated block locally without installing Gym or harnesses:
+
+```bash
+python -m scripts.harness_conformance.publish
+```
+
+This requires Python and authenticated `gh` with Actions read access. The publisher
+downloads the exact artifacts from one run attempt, validates their commit, full
+suite, scenario coverage, P0 statuses, and runtime identities, and replaces only
+the main page's generated block. Missing/inconsistent artifacts stop publication;
+partial reruns never reuse older harness results. JUnit validation counts are
+included for new CI runs; earlier artifacts are identified as having no retained
+test counts. A content-addressed JSON report persists portable check results,
+runtime identities, timestamps, and input hashes after raw artifacts expire.
+
+Generation happens in the docs build checkout; periodic results do not create
+repository commits. Every Fern publication applies the overlay so other docs
+updates cannot restore an older checked-in table. Production publication remains
+in `publish-fern-docs.yml` with the existing `DOCS_FERN_TOKEN`; probes keep their
+read-only permissions and require no model credentials.
+
+## Regenerate a table with fresh probes
 
 From a checkout matching a full Gym commit SHA, rebuild the TE table in
 [`reference/trajectory-capabilities`](../../fern/versions/latest/pages/reference/trajectory-capabilities.mdx):
