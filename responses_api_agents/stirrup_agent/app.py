@@ -335,7 +335,7 @@ class StirrupAgentWrapper(SimpleResponsesAPIAgent):
         )
 
     def classify_outcome(self, native_result: Mapping[str, Any]) -> AgentOutcome:
-        """Use the SDK HTTP status retained by the sandbox runner; never infer it from error text."""
+        """Use the runner's explicit model-request status; never infer it from error text."""
         status = native_result.get("model_error_status")
         if native_result.get("model_error") and type(status) is int and 400 <= status <= 599:
             return AgentOutcome(failure_kind=MODEL_REQUEST_ERROR, status_code=status)

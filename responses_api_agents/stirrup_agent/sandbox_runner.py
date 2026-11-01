@@ -29,6 +29,7 @@ import httpx  # noqa: E402
 from openai import APIStatusError  # noqa: E402
 from openai.types.responses import FunctionToolParam  # noqa: E402
 from pydantic import BaseModel, ConfigDict, create_model  # noqa: E402
+from stirrup.core.exceptions import ContextOverflowError  # noqa: E402
 from stirrup.core.models import (  # noqa: E402
     ImageContentBlock,
     Tool,
@@ -391,6 +392,12 @@ async def run(payload: dict[str, Any], scratch: Path, observer: Observer) -> dic
                 asyncio.current_task().uncancel()
                 finish_params, history = None, _completed_turns(session, messages)
                 stop_reason = _stop_reason(payload)
+            except ContextOverflowError:
+                # Reaching a protected history boundary is still a model rejection, not a runner failure.
+                finish_params, history = None, _completed_turns(session, messages)
+                stop_reason = "model_error"
+                model_error = "Context window exhausted and Stirrup context recovery could not continue."
+                model_error_status = 400
             except APIStatusError as error:
                 if not _rejected_by_model(error):
                     raise

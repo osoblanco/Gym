@@ -182,6 +182,13 @@ limit. Tokenization failures, exhausted context and rejected model requests rema
 completions that consume turns and become misleading no-answer scores. It requires a vLLM chat-completions
 endpoint; see the [model adapter's configuration](../../responses_api_models/vllm_model/README.md).
 
+Stirrup recognizes explicit HTTP context-limit errors and applies its existing bounded recovery: it can remove
+the latest completed turn and retry compaction while preserving the original task and prior summary boundary.
+This changes retained history and may add model calls; it does not lower the output budget or disable thinking.
+If that recovery cannot preserve progress, the episode still fails. See the
+[agent's recovery contract](../../responses_api_agents/stirrup_agent/README.md#dynamic-max_completion_tokens-sizing).
+AA's exact overflow policy remains unpublished, so this recovery is not a claim of identical AA behavior.
+
 Start the synthetic example after supplying a model overlay and the provider connection variables:
 
 ```bash

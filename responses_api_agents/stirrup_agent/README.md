@@ -25,8 +25,9 @@ supervisor. The runner builds Stirrup's messages from `responses_create_params.i
 The model server is reached directly from the sandbox, so its address must be reachable from there. The trajectory
 comes back as the response's output items; verification belongs to the resources server.
 
-If the model server rejects a request as invalid (HTTP 400, 413 or 422, such as a context overflow), the episode ends
-there. The response carries the turns completed so far, with `status: failed`, an `error` and
+An HTTP 400 or 413 with the structured error code `context_length_exceeded` reaches Stirrup's existing context
+recovery. Other invalid requests (HTTP 400, 413 or 422) end the episode there. The response carries the turns
+completed so far, with `status: failed`, an `error` and
 `metadata.stop_reason: model_error`, and the resources server verifies it. Any other model server error fails the
 episode.
 
@@ -62,9 +63,8 @@ The wrapper ships a `DynamicMaxTokensChatCompletionsClient`
 1. Estimates the input tokens from a character count of the whole serialized history and tool schemas, tool
    calls included.
 2. Computes `max_completion_tokens = context_window − input_tokens − completion_token_buffer`.
-3. Replicates upstream's response parsing but does **not** raise
-   `ContextOverflowError` on `finish_reason=length`; the agent loop
-   terminates normally via the `finish` tool or `max_turns`.
+3. Retains partial content from successful responses with `finish_reason=length`; that finish reason alone does
+   not discard history or raise `ContextOverflowError`.
 
 `completion_token_buffer` absorbs the residual gap between our estimate and the exact prompt the server renders
 (chat-template wrappers, tool-schema injection). The default `1000` works in practice; raise it (e.g. 2000–5000) if
@@ -72,6 +72,20 @@ you see sporadic HTTP 400 responses at the vLLM proxy.
 
 The character estimate can substantially overcount retained reasoning, so the client still dispatches the configured
 completion floor; the hard completion cap always applies.
+
+When a model request is refused with HTTP 400 or 413 and the structured code `context_length_exceeded`, the client
+raises Stirrup's `ContextOverflowError`. It accepts the OpenAI error envelope and FastAPI's `detail` envelope;
+error-message text alone is insufficient. Other errors, including invalid output-token parameters, retain their
+original exception.
+
+Stirrup's existing recovery removes the latest completed turn and its metadata, then retries the model call or
+compaction. It preserves the original task and never crosses a prior summary boundary: at least one completed turn
+must remain after that boundary, otherwise recovery raises and the episode fails. This can add model calls and
+change the retained history. It does not change the configured output budget, thinking, or sampling settings, and
+is separate from the opt-in `truncation_recovery` behavior below. If recovery cannot continue, the runner retains
+its saved partial trajectory and observations and reports `status: failed`, `metadata.stop_reason: model_error`,
+and a normalized 400 model-request outcome with a context-exhaustion message. It does not turn exhaustion into a runner
+crash or a successful completion.
 
 ### Client and agent options
 

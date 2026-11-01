@@ -241,6 +241,31 @@ def test_a_request_the_model_server_rejects_ends_the_run_as_failed_with_the_turn
     assert [u["total_tokens"] for u in output["usages"]] == [15]
 
 
+@pytest.mark.parametrize("completed_turn", [False, True])
+def test_unrecoverable_context_overflow_is_a_model_rejection_with_partial_history(tmp_path, resources, completed_turn):
+    answers = [_call("code_exec", json.dumps({"cmd": "true"}))] if completed_turn else []
+    model = _ModelServer([*answers, 400], error_code="context_length_exceeded")
+    try:
+        output = _run_main(tmp_path, _payload(model.base_url, resources.base_url, tmp_path))
+    finally:
+        model.close()
+
+    assert "error" not in output
+    assert output["stop_reason"] == "model_error"
+    assert "context" in output["model_error"].lower()
+    assert output["model_error_status"] == 400
+    assert output["observations"]["status"] == "failed"
+    assert output["observations"]["model_response_ids"] == (["chatcmpl-1"] if completed_turn else [])
+    assert [tool["tool_name"] for tool in output["observations"]["tool_calls"]] == (
+        ["code_exec"] if completed_turn else []
+    )
+    assert [item["type"] for item in output["output_items"]] == (
+        ["function_call", "function_call_output"] if completed_turn else []
+    )
+    assert [usage["total_tokens"] for usage in output["usages"]] == ([15] if completed_turn else [])
+    assert len(model.requests) == (2 if completed_turn else 1)
+
+
 @pytest.mark.parametrize("status", [401, 403, 404])
 def test_a_model_server_error_that_is_not_a_rejected_request_still_fails_the_run(tmp_path, resources, status):
     model = _ModelServer([status])
