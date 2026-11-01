@@ -137,6 +137,62 @@ async def test_successful_length_response_retains_partial_content(finish_reason)
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("reasoning_field", ["reasoning", "reasoning_content"])
+async def test_response_diagnostics_distinguish_inline_and_separate_reasoning_without_exporting_text(reasoning_field):
+    client = _make_client(truncation_recovery=False)
+    response = _make_response(content="<think>PRIVATE_INLINE</think>ANSWER_SECRET")
+    setattr(response.choices[0].message, reasoning_field, "PRIVATE_REASONING")
+    response.choices[0].finish_reason = "length"
+    client._client.chat.completions.create = AsyncMock(return_value=response)
+
+    result = await client.generate([UserMessage(content="task")], tools={})
+
+    diagnostics = client.last_response_diagnostics
+    assert diagnostics["finish_reason"] == "length"
+    assert diagnostics["content_present"] is True
+    assert diagnostics["content_chars"] == 42
+    assert diagnostics["reasoning_chars"] == 17
+    assert diagnostics["reasoning_present"] is True
+    assert diagnostics["inline_think_open"] is True
+    assert diagnostics["inline_think_close"] is True
+    assert diagnostics["tool_calls_count"] == 0
+    assert diagnostics["usage"] == {"input": 10, "answer": 5, "reasoning": 0}
+    assert "PRIVATE" not in json.dumps(diagnostics)
+    assert "ANSWER_SECRET" not in json.dumps(diagnostics)
+    assert result.content == response.choices[0].message.content
+    assert result.reasoning.content == "PRIVATE_REASONING"
+
+
+@pytest.mark.asyncio
+async def test_response_diagnostics_do_not_reuse_a_previous_response_after_http_failure():
+    client = _make_client(truncation_recovery=False)
+    error = APIStatusError(
+        "request failed", response=httpx.Response(500, request=httpx.Request("POST", "http://test")), body=None
+    )
+    client._client.chat.completions.create = AsyncMock(side_effect=[_make_response(), error])
+    await client.generate([UserMessage(content="task")], tools={})
+    assert client.last_response_diagnostics is not None
+
+    with pytest.raises(APIStatusError):
+        await client.generate([UserMessage(content="task")], tools={})
+
+    assert client.last_response_diagnostics is None
+
+
+@pytest.mark.asyncio
+async def test_response_diagnostics_allowlist_finish_reason():
+    client = _make_client(truncation_recovery=False)
+    response = _make_response()
+    response.choices[0].finish_reason = "PRIVATE_UNEXPECTED_PROVIDER_VALUE"
+    client._client.chat.completions.create = AsyncMock(return_value=response)
+
+    await client.generate([UserMessage(content="task")], tools={})
+
+    assert client.last_response_diagnostics["finish_reason"] == "unknown"
+    assert "PRIVATE" not in json.dumps(client.last_response_diagnostics)
+
+
+@pytest.mark.asyncio
 async def test_generate_forwards_configured_sampling_kwargs() -> None:
     """``temperature``, ``top_p``, ``enable_thinking``, and the cap on
     ``max_completion_tokens`` should land on the wire request_kwargs."""

@@ -45,6 +45,7 @@ from __future__ import annotations
 
 import json
 import logging
+import re
 from time import perf_counter
 from typing import TYPE_CHECKING, Any, Optional
 
@@ -208,6 +209,7 @@ class DynamicMaxTokensChatCompletionsClient(ChatCompletionsClient):
         # emitting a tool call; consumed by the very next generate().
         self._recover_from_truncation = False
         self._truncation_overruns = 0
+        self.last_response_diagnostics: Optional[dict[str, Any]] = None
 
     # ------------------------------------------------------------------
     # Token counting
@@ -313,6 +315,8 @@ class DynamicMaxTokensChatCompletionsClient(ChatCompletionsClient):
         messages: list[ChatMessage],
         tools: dict[str, Tool],
     ) -> AssistantMessage:
+        # A rejected request must not inherit diagnostics from a previous response.
+        self.last_response_diagnostics = None
         provider_messages = to_provider_openai_messages(messages)
 
         # Recovery turn: the previous call spent its whole completion budget
@@ -413,6 +417,25 @@ class DynamicMaxTokensChatCompletionsClient(ChatCompletionsClient):
             # vLLM >= 0.16.0 emits `reasoning` (Responses-API convention) instead of
             # `reasoning_content`; e.g. DeepSeek-V4's `--reasoning-parser deepseek_v4`.
             reasoning = Reasoning(content=msg.reasoning)
+
+        # Record response shape without copying text, tool arguments, or arbitrary provider fields.
+        # Compaction uses this to distinguish empty answers from reasoning-only and truncated outputs.
+        content = msg.content if isinstance(msg.content, str) else ""
+        reasoning_content = reasoning.content if reasoning is not None else ""
+        finish_reason = choice.finish_reason
+        if finish_reason not in {"stop", "length", "max_tokens", "tool_calls", "function_call", "content_filter"}:
+            finish_reason = "unknown"
+        self.last_response_diagnostics = {
+            "finish_reason": finish_reason,
+            "content_present": msg.content is not None,
+            "content_chars": len(content),
+            "reasoning_present": reasoning is not None,
+            "reasoning_chars": len(reasoning_content) if isinstance(reasoning_content, str) else 0,
+            "inline_think_open": bool(re.search(r"<think\s*>", content, re.IGNORECASE)),
+            "inline_think_close": bool(re.search(r"</think\s*>", content, re.IGNORECASE)),
+            "tool_calls_count": len(msg.tool_calls or []),
+            "usage": {"input": prompt_tokens, "answer": answer_tokens, "reasoning": reasoning_tokens},
+        }
 
         tool_calls = [
             ToolCall(

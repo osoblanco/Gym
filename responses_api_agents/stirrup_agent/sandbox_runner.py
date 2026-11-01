@@ -339,7 +339,7 @@ class Observer:
 
 
 async def run(payload: dict[str, Any], scratch: Path, observer: Observer) -> dict[str, Any]:
-    from responses_api_agents.stirrup_agent.nemo_agent import NeMoAgent
+    from responses_api_agents.stirrup_agent.nemo_agent import CompactionSummaryError, NeMoAgent
     from responses_api_agents.stirrup_agent.nemo_client import DynamicMaxTokensChatCompletionsClient
     from responses_api_agents.stirrup_agent.stirrup_utils import (
         convert_stirrup_history_to_output_items,
@@ -382,6 +382,7 @@ async def run(payload: dict[str, Any], scratch: Path, observer: Observer) -> dic
         stop_reason = None
         model_error = None
         model_error_status = None
+        agent_error = None
         async with agent.session(cache_on_interrupt=False) as session:
             try:
                 finish_params, history, _ = await session.run(messages)
@@ -392,6 +393,13 @@ async def run(payload: dict[str, Any], scratch: Path, observer: Observer) -> dic
                 asyncio.current_task().uncancel()
                 finish_params, history = None, _completed_turns(session, messages)
                 stop_reason = _stop_reason(payload)
+            except CompactionSummaryError as error:
+                # Compaction runs after a completed turn, ahead of Stirrup's next snapshot. The exception carries
+                # that full pre-compaction history, including turns removed from the summarizer's working context.
+                state = session._current_run_state
+                finish_params = None
+                history = [*(state.full_msg_history if state is not None else []), error.messages]
+                stop_reason, agent_error = "compaction_summary_exhausted", str(error)
             except ContextOverflowError:
                 # Reaching a protected history boundary is still a model rejection, not a runner failure.
                 finish_params, history = None, _completed_turns(session, messages)
@@ -405,7 +413,7 @@ async def run(payload: dict[str, Any], scratch: Path, observer: Observer) -> dic
                 finish_params, history = None, _completed_turns(session, messages)
                 stop_reason, model_error = "model_error", str(error)
                 model_error_status = error.status_code
-        if model_error is not None:
+        if model_error is not None or agent_error is not None:
             status = InvocationStatus.FAILED
         else:
             status = InvocationStatus.COMPLETED if finish_params is not None else InvocationStatus.INCOMPLETE
@@ -418,6 +426,8 @@ async def run(payload: dict[str, Any], scratch: Path, observer: Observer) -> dic
             "stop_reason": stop_reason,
             "model_error": model_error,
             "model_error_status": model_error_status,
+            "agent_error": agent_error,
+            "compaction_events": session.compaction_events,
             **observer.report(status, history, output_items),
         }
 

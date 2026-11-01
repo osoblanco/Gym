@@ -87,6 +87,18 @@ its saved partial trajectory and observations and reports `status: failed`, `met
 and a normalized 400 model-request outcome with a context-exhaustion message. It does not turn exhaustion into a runner
 crash or a successful completion.
 
+If all three compaction attempts return unusable summary text, the runner preserves the partial trajectory,
+including the turn that triggered compaction, and reports `status: failed` with
+`metadata.stop_reason: compaction_summary_exhausted`. This is an `agent_run_error` outcome with no upstream HTTP
+status. The environment's default outcome policy leaves it unscored and does not retry it automatically. An explicit
+environment policy can override that default. Unrelated implementation errors still fail the runner.
+
+The response's `metadata.compaction_events` contains a JSON-encoded list of compaction attempt and overflow-recovery
+events on both successful and failed episodes. Events record accepted/rejected status, fixed rejection categories,
+response-field lengths, tool-call counts, token usage, and available response diagnostics. They exclude prompts,
+answers, reasoning text, tool arguments, and provider error bodies. These diagnostics expose what the summarizer
+returned without changing its configured output budget, thinking, or sampling settings.
+
 ### Client and agent options
 
 These are constructor arguments of `DynamicMaxTokensChatCompletionsClient`
@@ -97,7 +109,7 @@ These are constructor arguments of `DynamicMaxTokensChatCompletionsClient`
 | `min_completion_tokens` (client) | `1024` | Target per-call completion floor. The hard cap always applies, and the approximate estimate keeps this floor even when it exceeds the context. Agents that write a whole script or deliverable in one tool call may need a higher floor: a 1024-token completion cannot reliably hold one. |
 | `prompt_estimator_truncate_history_thinking` (client) | `None` | Estimator-only. When `True`, the character estimate drops completed reasoning from assistant turns before the last user turn, as Nemotron's template does. It is never sent to the provider and never changes the recorded history. |
 | `truncation_recovery` (client) | `False` | When `True`, a turn that uses its whole completion budget without a schema-valid tool call is followed by one turn that requests thinking off and appends a one-time instruction to act now. The instruction is sent to the model but not recorded in the trajectory. |
-| `min_compaction_summary_words` (agent) | `1` | Minimum word count for a context-compaction summary, counted after a leading `<think>` block is stripped. The agent makes up to 3 summary attempts (the last one without tools) and raises instead of replacing the history with an unusable summary. |
+| `min_compaction_summary_words` (agent) | `1` | Minimum word count for a context-compaction summary, counted after a leading `<think>` block is stripped. The agent makes up to 3 summary attempts (the last one without tools). Exhaustion preserves the history and returns an explicitly failed, unscored outcome under the default environment policy. |
 
 Thinking control (`enable_thinking`, and the thinking-off turn of
 `truncation_recovery`) is sent as `extra_body.chat_template_kwargs`. It only

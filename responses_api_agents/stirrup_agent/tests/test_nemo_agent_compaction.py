@@ -25,6 +25,7 @@ from stirrup.core.models import (
 )
 from stirrup.prompts import MESSAGE_SUMMARIZER
 
+import responses_api_agents.stirrup_agent.nemo_agent as nemo_agent_module
 from responses_api_agents.stirrup_agent.nemo_agent import (
     NeMoAgent,
     NeMoSessionAgent,
@@ -411,3 +412,101 @@ async def test_session_run_replays_only_the_sanitized_summary_after_compaction()
     assert good_summary in serialized_context
     assert "private summary reasoning" not in serialized_context
     assert "<think>" not in serialized_context.lower()
+
+
+@pytest.mark.asyncio
+async def test_summary_exhaustion_preserves_original_history_and_safe_attempt_diagnostics() -> None:
+    """A terminal compaction must not lose the current turn or expose response text in diagnostics."""
+    history = _history()
+    history.extend([_assistant("UNWOUND_PRIVATE_PROGRESS", message_id="assistant-2"), UserMessage(content="continue")])
+    secret = "DO_NOT_EXPORT_PRIVATE_REASONING"
+    client = _FakeClient(
+        ContextOverflowError("too large"),
+        AssistantMessage(content="", reasoning=Reasoning(content=secret)),
+        _assistant(f"<think>{secret}</think>"),
+        _assistant("   "),
+    )
+    agent = _agent(client)
+    metadata = {"assistant-1": {"first": []}, "assistant-2": {"discarded": []}}
+
+    with pytest.raises(RuntimeError, match="usable text after 3 attempts") as caught:
+        await agent.summarize_messages(history, metadata)
+
+    error_type = getattr(nemo_agent_module, "CompactionSummaryError", None)
+    assert error_type is not None and isinstance(caught.value, error_type)
+    assert caught.value.messages == history
+    assert caught.value.messages is not history
+    assert len(client.calls) == 4
+    assert "assistant-2" not in metadata
+    assert [event["event"] for event in agent.compaction_events] == [
+        "context_overflow",
+        "overflow_unwind",
+        "summary_rejected",
+        "summary_rejected",
+        "summary_rejected",
+    ]
+    assert agent.compaction_events[1]["dropped_message_count"] == 2
+    attempts = caught.value.attempts
+    assert [attempt["attempt"] for attempt in attempts] == [1, 2, 3]
+    assert [attempt["rejection_reason"] for attempt in attempts] == ["empty_text", "reasoning_only", "empty_text"]
+    assert attempts[0]["reasoning_present"] is True
+    assert attempts[0]["reasoning_chars"] == len(secret)
+    assert attempts[1]["content_chars"] == len(secret) + 15
+    assert all(attempt["sanitized_chars"] == 0 for attempt in attempts)
+    assert all(attempt["tool_calls_count"] == 0 for attempt in attempts)
+    assert attempts[1]["usage"] == {"input": 1, "answer": 1, "reasoning": 0}
+    exported = json.dumps({"attempts": attempts, "events": agent.compaction_events})
+    assert secret not in exported
+    assert "UNWOUND_PRIVATE_PROGRESS" not in exported
+    assert "<think>" not in exported
+
+
+@pytest.mark.asyncio
+async def test_summary_acceptance_records_sanitized_metadata_without_changing_replay() -> None:
+    client = _FakeClient(_assistant("<think>PRIVATE_THINKING</think> kept result"))
+    agent = _agent(client)
+
+    _, compacted = await agent.summarize_messages(_history(), {})
+
+    event = agent.compaction_events[-1]
+    assert event["event"] == "summary_accepted"
+    assert event["attempt"] == 1
+    assert event["sanitized_chars"] == 11
+    assert event["sanitized_words"] == 2
+    assert event["rejection_reason"] is None
+    assert "PRIVATE_THINKING" not in json.dumps(event)
+    assert "kept result" not in json.dumps(event)
+    assert "kept result" in next(message.content for message in compacted if isinstance(message, SummaryMessage))
+
+
+@pytest.mark.asyncio
+async def test_context_recovery_boundary_is_recorded_without_dropping_protected_history() -> None:
+    history = _history()
+    agent = _agent(_FakeClient(ContextOverflowError("PRIVATE_PROVIDER_DIAGNOSTIC")))
+
+    with pytest.raises(ContextOverflowError):
+        await agent.summarize_messages(history, {})
+
+    assert [event["event"] for event in agent.compaction_events] == ["context_overflow", "overflow_unwind_blocked"]
+    assert agent.compaction_events[-1]["history_message_count"] == 4
+    assert "PRIVATE_PROVIDER_DIAGNOSTIC" not in json.dumps(agent.compaction_events)
+
+
+@pytest.mark.asyncio
+async def test_session_compaction_events_remain_available_after_run() -> None:
+    client = _FakeClient(
+        AssistantMessage(content="first policy turn", token_usage=TokenUsage(input=190_000, answer=10, reasoning=0)),
+        _assistant("working summary"),
+        _assistant("second policy turn"),
+        AssistantMessage(content="next session turn", token_usage=TokenUsage(input=190_000, answer=10, reasoning=0)),
+        _assistant("next session summary"),
+        _assistant("last policy turn"),
+    )
+    agent = NeMoAgent(
+        client=client, name="test_agent", tools=[], logger=MagicMock(), max_turns=2, context_summarization_cutoff=0.7
+    )
+
+    for task in ("original task", "another task"):
+        async with agent.session(cache_on_interrupt=False) as session:
+            await session.run(task)
+            assert [event["event"] for event in session.compaction_events] == ["summary_accepted"]
